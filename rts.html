@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pixel RTS: Humans vs Orcs</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background-color: #2c3e50;
+            font-family: 'Courier New', monospace; touch-action: none;
+            display: flex; flex-direction: column;
+        }
+        #game-container {
+            flex-grow: 1; position: relative; overflow: hidden;
+        }
+        canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+        
+        /* UI Styles */
+        #ui-bar {
+            height: 100px; background: #1a1a1a; color: gold;
+            display: flex; align-items: center; padding: 0 10px;
+            border-top: 3px solid #555; box-sizing: border-box;
+        }
+        #resources { min-width: 120px; font-weight: bold; font-size: 18px; }
+        #actions {
+            display: flex; gap: 5px; overflow-x: auto; flex-grow: 1;
+            padding-left: 20px;
+        }
+        .btn {
+            width: 80px; height: 80px; background: #444; color: white;
+            border: 2px solid #777; font-size: 12px;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            text-align: center; cursor: pointer; user-select: none;
+        }
+        .btn:active { background: #666; }
+        .btn small { font-size: 10px; color: gold; display: block; margin-top: 5px;}
+
+        /* Menu Styles */
+        #menu {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); color: white;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
+        h1 { color: gold; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 2px; }
+        .faction-btn {
+            margin: 10px; padding: 20px 40px; font-size: 24px; border: none;
+            cursor: pointer; font-family: inherit; font-weight: bold;
+        }
+        #btn-human { background: #3498db; color: white; box-shadow: 0 5px #2980b9; }
+        #btn-orc { background: #e74c3c; color: white; box-shadow: 0 5px #c0392b; }
+
+        #pop-text {
+             position: absolute; color: white; font-weight: bold; pointer-events: none;
+             text-shadow: 1px 1px 2px black; z-index: 50;
+             transition: opacity 1s, transform 1s;
+        }
+    </style>
+</head>
+<body>
+
+<div id="menu">
+    <h1>Pixel War</h1>
+    <p>Выберите фракцию:</p>
+    <div>
+        <button id="btn-human" class="faction-btn" onclick="startGame('human')">ЛЮДИ</button>
+        <button id="btn-orc" class="faction-btn" onclick="startGame('orc')">ОРКИ</button>
+    </div>
+    <p style="font-size: 12px; color: #aaa; margin-top: 30px; text-align: center; padding: 0 20px;">
+        Управление: Тап для выбора. Тап по земле для движения. <br>
+        Рабочие добывают золото стоя на рудниках.<br>
+        Используйте меню внизу для постройки и найма.
+    </button>
+</div>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+</div>
+<div id="ui-bar">
+    <div id="resources">Золото: <span id="gold-count">0</span></div>
+    <div id="actions"></div>
+</div>
+
+<script>
+/** --- КОНФИГУРАЦИЯ И ДАННЫЕ --- **/
+
+// Характеристики Юнитов
+const UNITS = {
+    // Люди
+    h_worker: { name: "Рабочий", hp: 60, dmg: 3, range: 15, speed: 2, cost: 50, color: '#3498db', type: 'worker', shape: 'square', size: 10 },
+    h_archer: { name: "Лучник", hp: 80, dmg: 10, range: 120, speed: 2.5, cost: 120, color: '#2980b9', type: 'ranged', shape: 'tri', size: 12 },
+    h_knight: { name: "Рыцарь", hp: 150, dmg: 15, range: 15, speed: 1.8, cost: 180, color: '#bdc3c7', type: 'melee', shape: 'square', size: 16 },
+    h_horse:  { name: "Всадник", hp: 180, dmg: 12, range: 15, speed: 3.5, cost: 250, color: '#ecf0f1', type: 'melee', shape: 'rect', size: 18 },
+    // Орки
+    o_worker: { name: "Раб", hp: 60, dmg: 3, range: 15, speed: 2, cost: 50, color: '#e74c3c', type: 'worker', shape: 'square', size: 10 },
+    o_axe:    { name: "Метатель", hp: 90, dmg: 12, range: 100, speed: 2.2, cost: 120, color: '#c0392b', type: 'ranged', shape: 'tri', size: 12 },
+    o_sword:  { name: "Рубака", hp: 160, dmg: 16, range: 15, speed: 1.7, cost: 180, color: '#d35400', type: 'melee', shape: 'square', size: 16 },
+    o_warg:   { name: "Наездник", hp: 200, dmg: 14, range: 15, speed: 3.6, cost: 250, color: '#96281b', type: 'melee', shape: 'rect', size: 18 },
+};
+
+// Характеристики Зданий
+const BUILDINGS = {
+    // Люди
+    h_townhall: { name: "Цитадель", hp: 1500, cost: 0, color: '#2c3e50', size: 40, trains: ['h_worker'], isDropoff: true },
+    h_barracks: { name: "Казармы", hp: 800, cost: 200, color: '#7f8c8d', size: 30, trains: ['h_archer', 'h_knight'] },
+    h_stable:   { name: "Конюшня", hp: 700, cost: 300, color: '#95a5a6', size: 35, trains: ['h_horse'] },
+    h_tower:    { name: "Башня", hp: 500, cost: 150, color: '#bdc3c7', size: 20, dmg: 15, range: 130, type: 'tower' },
+    h_wall:     { name: "Стена", hp: 600, cost: 50, color: '#bdc3c7', size: 15, type: 'wall' },
+    // Орки
+    o_townhall: { name: "Дворец Вождя", hp: 1500, cost: 0, color: '#4a231b', size: 40, trains: ['o_worker'], isDropoff: true },
+    o_barracks: { name: "Бараки", hp: 800, cost: 200, color: '#8e44ad', size: 30, trains: ['o_axe', 'o_sword'] },
+    o_stable:   { name: "Волчья Яма", hp: 700, cost: 300, color: '#7d3c98', size: 35, trains: ['o_warg'] },
+    o_tower:    { name: "Вышка", hp: 500, cost: 150, color: '#c0392b', size: 20, dmg: 15, range: 130, type: 'tower' },
+    o_wall:     { name: "Баррикада", hp: 600, cost: 50, color: '#c0392b', size: 15, type: 'wall' },
+};
+
+const GLOBALS = {
+    tickRate: 30, // кадров в секунду для логики
+    goldTickRate: 60, // как часто капает золото с рудника (в тиках)
+    aiBuildTickRate: 150, // как часто ИИ думает о постройке
+};
+
+/** --- ДВИЖОК ИГРЫ --- **/
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const uiResources = document.getElementById('gold-count');
+const uiActions = document.getElementById('actions');
+let width, height;
+
+let gameState = {
+    running: false,
+    frame: 0,
+    playerFaction: null,
+    enemyFaction: null,
+    gold: { human: 200, orc: 200 },
+    entities: [],
+    projectiles: [],
+    resources: [],
+    selection: null,
+    buildMode: null, // Какой тип здания строим сейчас
+    aiBuildOrderStep: 0 // Простой счетчик для ИИ
+};
+
+// --- Базовые классы ---
+
+class Entity {
+    constructor(x, y, faction, statsKey, isBuilding = false) {
+        this.x = x; this.y = y;
+        this.faction = faction;
+        this.statsKey = statsKey;
+        const stats = isBuilding ? BUILDINGS[statsKey] : UNITS[statsKey];
+        this.hp = stats.hp;
+        this.maxHp = stats.hp;
+        this.color = stats.color;
+        this.size = stats.size;
+        this.name = stats.name;
+        this.id = Math.random();
+        this.isBuilding = isBuilding;
+        this.dead = false;
+    }
+}
+
+class Unit extends Entity {
+    constructor(x, y, faction, statsKey) {
+        super(x, y, faction, statsKey, false);
+        const stats = UNITS[statsKey];
+        this.dmg = stats.dmg;
+        this.range = stats.range;
+        this.speed = stats.speed;
+        this.type = stats.type;
+        this.shape = stats.shape;
+        this.targetPos = null;
+        this.attackTarget = null;
+        this.cooldown = 0;
+        this.miningTarget = null;
+    }
+
+    update() {
+        if (this.dead) return;
+        if (this.cooldown > 0) this.cooldown--;
+
+        // Простая логика рабочих: если стоит на руднике - добывает
+        if (this.type === 'worker' && gameState.frame % GLOBALS.goldTickRate === 0) {
+            let mine = gameState.resources.find(r => Math.hypot(r.x - this.x, r.y - this.y) < r.size + this.size);
+            if (mine) {
+                gameState.gold[this.faction] += 5;
+                // Визуальный эффект добычи
+                 if(this.faction === gameState.playerFaction) showPopupText(this.x, this.y, "+5", "gold");
+            }
+        }
+
+        // Движение
+        if (this.targetPos) {
+            const dx = this.targetPos.x - this.x;
+            const dy = this.targetPos.y - this.y;
+            const dist = Math.hypot(dx, dy);
+            // Если цель близко, останавливаемся (для атаки) или доходим (для движения)
+            let stopDist = (this.attackTarget) ? this.range - 5 : this.speed;
+            
+            if (dist > stopDist) {
+                this.x += (dx / dist) * this.speed;
+                this.y += (dy / dist) * this.speed;
+            } else if (!this.attackTarget) {
+                this.targetPos = null; // Дошли до точки
+            }
+        }
+
+        // Атака
+        if (this.attackTarget && this.attackTarget.dead) {
+             this.attackTarget = null;
+             this.targetPos = null;
+        }
+
+        if (this.attackTarget && this.cooldown <= 0) {
+            const dist = Math.hypot(this.attackTarget.x - this.x, this.attackTarget.y - this.y);
+            if (dist <= this.range + this.attackTarget.size/2) {
+                // Стрельба или удар
+                if (this.range > 30) {
+                    gameState.projectiles.push({
+                        x: this.x, y: this.y, target: this.attackTarget, dmg: this.dmg, color: this.color, speed: 6
+                    });
+                } else {
+                    this.attackTarget.hp -= this.dmg;
+                }
+                this.cooldown = (this.range > 30) ? 40 : 30; // Скорострельность
+            } else {
+                 // Если цель далеко, идем к ней
+                 this.targetPos = {x: this.attackTarget.x, y: this.attackTarget.y};
+            }
+        }
+        
+        // Авто-атака (если стоим и не добываем)
+        if (!this.targetPos && !this.attackTarget && this.type !== 'worker') {
+             let closestEnemy = findClosestEnemy(this, this.range + 50);
+             if(closestEnemy) this.attackTarget = closestEnemy;
+        }
+    }
+}
+
+class Building extends Entity {
+    constructor(x, y, faction, statsKey) {
+        super(x, y, faction, statsKey, true);
+        const stats = BUILDINGS[statsKey];
+        this.trains = stats.trains;
+        this.dmg = stats.dmg || 0;
+        this.range = stats.range || 0;
+        this.type = stats.type || 'normal';
+        this.cooldown = 0;
+        this.spawnQueue = null;
+        this.spawnTimer = 0;
+    }
+
+    update() {
+        if (this.dead) return;
+        // Логика башни
+        if (this.type === 'tower' && this.cooldown <= 0) {
+            let target = findClosestEnemy(this, this.range);
+            if (target) {
+                 gameState.projectiles.push({
+                        x: this.x, y: this.y, target: target, dmg: this.dmg, color: 'yellow', speed: 8
+                    });
+                this.cooldown = 45;
+            }
+        }
+        if (this.cooldown > 0) this.cooldown--;
+
+        // Логика производства юнитов
+        if (this.spawnQueue) {
+            this.spawnTimer--;
+            if (this.spawnTimer <= 0) {
+                spawnUnit(this.spawnQueue, this.x, this.y + this.size + 10, this.faction);
+                this.spawnQueue = null;
+            }
+        }
+    }
+}
+
+// --- Вспомогательные функции ---
+
+function findClosestEnemy(entity, rangeLimit = Infinity) {
+    let closest = null;
+    let minDist = rangeLimit;
+    gameState.entities.forEach(e => {
+        if (e.faction !== entity.faction && !e.dead) {
+            let dist = Math.hypot(e.x - entity.x, e.y - entity.y);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = e;
+            }
+        }
+    });
+    return closest;
+}
+
+function spawnUnit(statsKey, x, y, faction) {
+    gameState.entities.push(new Unit(x, y, faction, statsKey));
+}
+
+function spawnBuilding(statsKey, x, y, faction) {
+    gameState.entities.push(new Building(x, y, faction, statsKey));
+}
+
+function showPopupText(x, y, text, color) {
+    const pop = document.createElement('div');
+    pop.id = 'pop-text';
+    pop.innerText = text;
+    pop.style.left = x + 'px';
+    pop.style.top = y + 'px';
+    pop.style.color = color;
+    document.getElementById('game-container').appendChild(pop);
+    
+    setTimeout(() => {
+        pop.style.opacity = '0';
+        pop.style.transform = 'translateY(-30px)';
+    }, 50);
+    setTimeout(() => pop.remove(), 1000);
+}
+
+// --- Отрисовка ---
+
+function draw() {
+    ctx.fillStyle = '#2c3e50'; // Цвет земли
+    ctx.fillRect(0, 0, width, height);
+
+    // Рудники
+    gameState.resources.forEach(r => {
+        ctx.fillStyle = 'gold';
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, r.size, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = '#d35400';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+    });
+
+    // Здания и Юниты
+    gameState.entities.forEach(e => {
+        if(e.dead) return;
+        
+        ctx.fillStyle = e.color;
+        ctx.strokeStyle = (gameState.selection === e) ? 'white' : '#111';
+        ctx.lineWidth = (gameState.selection === e) ? 3 : 1;
+
+        let s = e.size;
+        let x = e.x - s/2;
+        let y = e.y - s/2;
+
+        ctx.beginPath();
+        if (e.isBuilding || e.shape === 'square') {
+            ctx.fillRect(x, y, s, s);
+            ctx.strokeRect(x, y, s, s);
+        } else if (e.shape === 'rect') {
+            ctx.fillRect(x - s/4, y, s*1.5, s);
+            ctx.strokeRect(x - s/4, y, s*1.5, s);
+        }
+         else if (e.shape === 'tri') {
+            ctx.moveTo(e.x, e.y - s/2);
+            ctx.lineTo(e.x - s/2, e.y + s/2);
+            ctx.lineTo(e.x + s/2, e.y + s/2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        // HP Bar
+        if (e.hp < e.maxHp || gameState.selection === e) {
+            ctx.fillStyle = 'red';
+            ctx.fillRect(e.x - s/2, e.y - s/2 - 8, s, 4);
+            ctx.fillStyle = '#2ecc71';
+            ctx.fillRect(e.x - s/2, e.y - s/2 - 8, s * (e.hp / e.maxHp), 4);
+        }
+        
+        // Индикатор производства
+        if (e.isBuilding && e.spawnQueue) {
+             ctx.fillStyle = 'cyan';
+             ctx.fillRect(e.x - s/2, e.y + s/2 + 4, s * (1 - e.spawnTimer/150), 3);
+        }
+    });
+
+    // Снаряды
+    gameState.projectiles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+        ctx.fill();
+    });
+}
+
+// --- Игровой цикл ---
+
+function update() {
+    if (!gameState.running) return;
+    gameState.frame++;
+
+    // Обновление UI
+    uiResources.innerText = gameState.gold[gameState.playerFaction];
+
+    // Обновление сущностей
+    gameState.entities.forEach(e => e.update());
+    gameState.entities = gameState.entities.filter(e => e.hp > 0);
+    gameState.entities.forEach(e => { if(e.hp <=0) e.dead = true; });
+
+    // Обновление снарядов
+    for (let i = gameState.projectiles.length - 1; i >= 0; i--) {
+        let p = gameState.projectiles[i];
+        if (p.target.dead) {
+            gameState.projectiles.splice(i, 1); continue;
+        }
+        const dx = p.target.x - p.x;
+        const dy = p.target.y - p.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < p.speed + p.target.size/2) {
+            p.target.hp -= p.dmg;
+            gameState.projectiles.splice(i, 1);
+        } else {
+            p.x += (dx / dist) * p.speed;
+            p.y += (dy / dist) * p.speed;
+        }
+    }
+
+    // Простой ИИ
+    if (gameState.frame % GLOBALS.aiBuildTickRate === 0) {
+        runAI();
+    }
+    
+    // Проверка победы
+    let playerBases = gameState.entities.filter(e => e.faction === gameState.playerFaction && (e.statsKey.includes('townhall')));
+    let enemyBases = gameState.entities.filter(e => e.faction === gameState.enemyFaction && (e.statsKey.includes('townhall')));
+    
+    if(playerBases.length === 0 && gameState.frame > 100) endGame("ВЫ ПРОИГРАЛИ!");
+    if(enemyBases.length === 0 && gameState.frame > 100) endGame("ПОБЕДА!");
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+// --- ИИ (Очень простой) ---
+function runAI() {
+    const faction = gameState.enemyFaction;
+    const prefix = faction === 'human' ? 'h' : 'o';
+    const gold = gameState.gold[faction];
+    const bases = gameState.entities.filter(e => e.faction === faction && e.statsKey.includes('townhall'));
+    const barracks = gameState.entities.filter(e => e.faction === faction && e.statsKey.includes('barracks'));
+    const workers = gameState.entities.filter(e => e.faction === faction && e.type === 'worker');
+    const army = gameState.entities.filter(e => e.faction === faction && e.type !== 'worker' && !e.isBuilding);
+
+    if (bases.length === 0) return;
+    let mainBase = bases[0];
+
+    // 1. Строим рабочих, если их мало
+    if (workers.length < 5 && gold >= 50 && !mainBase.spawnQueue) {
+        mainBase.spawnQueue = prefix + '_worker';
+        mainBase.spawnTimer = 150;
+        gameState.gold[faction] -= 50;
+        return;
+    }
+
+    // 2. Строим бараки, если нет
+    if (barracks.length === 0 && gold >= 200) {
+        spawnBuilding(prefix + '_barracks', mainBase.x - 80, mainBase.y + 80, faction);
+        gameState.gold[faction] -= 200;
+        return;
+    }
+
+    // 3. Нанимаем армию
+    if (barracks.length > 0 && gold >= 120 && !barracks[0].spawnQueue) {
+        // Чередуем стрелков и милишников
+        let unitToTrain = (Math.random() > 0.5) ? (prefix + (faction==='human'?'_archer':'_axe')) : (prefix + (faction==='human'?'_knight':'_sword'));
+        if(gold >= UNITS[unitToTrain].cost) {
+             barracks[0].spawnQueue = unitToTrain;
+             barracks[0].spawnTimer = 150;
+             gameState.gold[faction] -= UNITS[unitToTrain].cost;
+        }
+        return;
+    }
+    
+    // 4. Отправляем новых рабочих на рудники
+    workers.forEach(w => {
+       if(!w.miningTarget && !w.attackTarget && !w.targetPos) {
+           let mine = gameState.resources[Math.floor(Math.random()*gameState.resources.length)];
+           w.targetPos = {x: mine.x, y: mine.y};
+           w.miningTarget = mine;
+       } 
+    });
+
+    // 5. Атака, если армия большая
+    if (army.length > 8) {
+        let target = findClosestEnemy(army[0]);
+        if(target) {
+            army.forEach(u => {
+                if(!u.attackTarget) u.targetPos = {x: target.x, y: target.y};
+            });
+        }
+    }
+}
+
+/** --- УПРАВЛЕНИЕ И UI --- **/
+
+canvas.addEventListener('pointerdown', handleInput);
+
+function handleInput(e) {
+    if (!gameState.running) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Режим строительства
+    if (gameState.buildMode && gameState.selection && gameState.selection.type === 'worker') {
+        const cost = BUILDINGS[gameState.buildMode].cost;
+        if (gameState.gold[gameState.playerFaction] >= cost) {
+            spawnBuilding(gameState.buildMode, x, y, gameState.playerFaction);
+            gameState.gold[gameState.playerFaction] -= cost;
+            // Отправляем рабочего к постройке (визуально)
+            gameState.selection.targetPos = {x:x, y:y};
+            gameState.selection.miningTarget = null; 
+        } else {
+            showPopupText(x, y, "Не хватает золота!", "red");
+        }
+        gameState.buildMode = null;
+        updateUI();
+        return;
+    }
+
+    // Поиск цели клика
+    let clickedEntity = null;
+    // Проверяем в обратном порядке, чтобы выбирать тех, кто "сверху"
+    for(let i=gameState.entities.length-1; i>=0; i--) {
+        let en = gameState.entities[i];
+        if (Math.hypot(en.x - x, en.y - y) < en.size/2 + 5) {
+            clickedEntity = en;
+            break;
+        }
+    }
+
+    // Логика выделения и приказов
+    if (clickedEntity) {
+        if (clickedEntity.faction === gameState.playerFaction) {
+            // Выбрали своего
+            gameState.selection = clickedEntity;
+            gameState.buildMode = null;
+        } else if (gameState.selection && !gameState.selection.isBuilding && gameState.selection.faction === gameState.playerFaction) {
+             // Атака врага
+             gameState.selection.attackTarget = clickedEntity;
+             gameState.selection.targetPos = null;
+             gameState.selection.miningTarget = null;
+        }
+    } else {
+        // Клик по земле
+        if (gameState.selection && !gameState.selection.isBuilding && gameState.selection.faction === gameState.playerFaction) {
+            gameState.selection.targetPos = { x: x, y: y };
+            gameState.selection.attackTarget = null;
+            
+            // Проверка клика по руднику для рабочего
+             if(gameState.selection.type === 'worker') {
+                 gameState.selection.miningTarget = null;
+                 gameState.resources.forEach(r => {
+                    if(Math.hypot(r.x - x, r.y - y) < r.size) {
+                        gameState.selection.targetPos = {x:r.x, y:r.y};
+                         gameState.selection.miningTarget = r;
+                    }
+                 });
+             }
+        } else {
+            // Сброс выделения
+            gameState.selection = null;
+        }
+    }
+    updateUI();
+}
+
+function updateUI() {
+    uiActions.innerHTML = '';
+    if (!gameState.selection || gameState.selection.faction !== gameState.playerFaction) return;
+
+    const s = gameState.selection;
+    const prefix = gameState.playerFaction === 'human' ? 'h_' : 'o_';
+
+    // Меню строительства для рабочего
+    if (s.type === 'worker') {
+        const buildables = ['townhall', 'barracks', 'stable', 'tower', 'wall'];
+        buildables.forEach(bKey => {
+            let fullKey = prefix + bKey;
+            createBtn(BUILDINGS[fullKey].name, BUILDINGS[fullKey].cost + 'g', () => {
+                gameState.buildMode = fullKey;
+                showPopupText(s.x, s.y, "Выберите место", "cyan");
+            });
+        });
+    }
+    // Меню найма для зданий
+    else if (s.isBuilding && s.trains && !s.spawnQueue) {
+        s.trains.forEach(uKey => {
+            createBtn(UNITS[uKey].name, UNITS[uKey].cost + 'g', () => {
+                if (gameState.gold[gameState.playerFaction] >= UNITS[uKey].cost) {
+                    gameState.gold[gameState.playerFaction] -= UNITS[uKey].cost;
+                    s.spawnQueue = uKey;
+                    s.spawnTimer = 150; // 5 секунд при 30 fps
+                    updateUI();
+                } else {
+                     showPopupText(s.x, s.y, "Need Gold!", "red");
+                }
+            });
+        });
+    }
+}
+
+function createBtn(text, subtext, onClick) {
+    const btn = document.createElement('div');
+    btn.className = 'btn';
+    btn.innerHTML = `<span>${text}</span><small>${subtext}</small>`;
+    btn.addEventListener('pointerdown', (e) => { e.stopPropagation(); onClick(); });
+    uiActions.appendChild(btn);
+}
+
+
+/** --- СТАРТ ИГРЫ --- **/
+
+function resize() {
+    width = window.innerWidth;
+    height = document.getElementById('game-container').offsetHeight;
+    canvas.width = width;
+    canvas.height = height;
+}
+window.addEventListener('resize', resize);
+
+function startGame(faction) {
+    document.getElementById('menu').style.display = 'none';
+    resize();
+    gameState.running = true;
+    gameState.playerFaction = faction;
+    gameState.enemyFaction = (faction === 'human' ? 'orc' : 'human');
+    gameState.gold = { human: 250, orc: 250 }; // Стартовое золото
+    gameState.entities = [];
+    gameState.resources = [];
+    gameState.projectiles = [];
+
+    // Генерация карты
+    const pPrefix = gameState.playerFaction === 'human' ? 'h' : 'o';
+    const ePrefix = gameState.enemyFaction === 'human' ? 'h' : 'o';
+    
+    // Базы
+    spawnBuilding(pPrefix+'_townhall', 100, height-100, gameState.playerFaction);
+    spawnBuilding(ePrefix+'_townhall', width-100, 100, gameState.enemyFaction);
+    
+    // Стартовые рабочие
+    spawnUnit(pPrefix+'_worker', 150, height-150, gameState.playerFaction);
+    spawnUnit(ePrefix+'_worker', width-150, 150, gameState.enemyFaction);
+
+    // Рудники (симметрично)
+    gameState.resources.push({x: 250, y: height-250, size: 30});
+    gameState.resources.push({x: width-250, y: 250, size: 30});
+    gameState.resources.push({x: width/2, y: height/2, size: 40}); // Центральный
+
+    requestAnimationFrame(update);
+}
+
+function endGame(msg) {
+    gameState.running = false;
+    const menu = document.getElementById('menu');
+    menu.innerHTML = `<h1>${msg}</h1><button class="faction-btn" style="background:#555" onclick="location.reload()">Menu</button>`;
+    menu.style.display = 'flex';
+}
+
+// Блокируем контекстное меню на мобилках
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>
